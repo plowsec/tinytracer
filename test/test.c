@@ -8,9 +8,39 @@
 int genNumber(int i)
 {
 
-	return i + 1337;
+	return i + 13637;
 }
 
+
+int genNumber1(int i)
+{
+
+	return i + 13337;
+}
+
+int genNumber2(int i)
+{
+
+	return i + 13137;
+}
+
+int genNumber3(int i)
+{
+
+	return i + 113337;
+}
+
+int genNumber4(int i)
+{
+
+	return i + 13337;
+}
+
+int genNumber5(int i)
+{
+
+	return i + 1338;
+}
 int main(void)
 {
 
@@ -48,6 +78,20 @@ int main(void)
 
 		int a = genNumber(rand());
 		printf("Random number generated: %d\n", a);
+		a = genNumber1(rand());
+		printf("Random number generated: %d\n", a);
+		a = genNumber2(rand());
+		printf("Random number generated: %d\n", a);
+		
+		a = genNumber3(rand());
+		printf("Random number generated: %d\n", a);
+		
+		a = genNumber4(rand());
+		printf("Random number generated: %d\n", a);
+		a = genNumber5(rand());
+		printf("Random number generated: %d\n", a);
+		
+		
 		int i = 0;
 		for(i= 0; i < 1000000;i++){}
 	}

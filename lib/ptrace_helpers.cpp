@@ -137,7 +137,7 @@ long long unsigned get_value(pid_t child_pid, long long unsigned address) {
     do {
         long long unsigned value = ptrace(PTRACE_PEEKTEXT, child_pid, (void*)address, 0);
         if (value == -1 && errno != 0) {
-            fprintf(stderr, "Error (%d) during get_value (pid = %d) ", errno, child_pid);
+            fprintf(stderr, "Error (%d) during get_value(0x%lx) (pid = %d) ", errno, address, child_pid);
             perror("ptrace");
         } else {
             return value;
@@ -148,7 +148,7 @@ long long unsigned get_value(pid_t child_pid, long long unsigned address) {
 }
 
 void set_breakpoint(long long unsigned bp_address, long long unsigned original_value, pid_t child_pid) {
-	//printf("Setting breakpoint\n");
+	printf("Setting breakpoint\n");
     long long unsigned breakpoint = (original_value & 0xFFFFFFFFFFFFFF00 | 0xCC);
     _ptrace(PTRACE_POKETEXT, child_pid, (void*)bp_address, (void*)breakpoint);
 
