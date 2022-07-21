@@ -106,7 +106,7 @@ struct user_regs_struct get_regs(pid_t child_pid, struct user_regs_struct regist
     //printf("Getting registers\n");                                                                                                                                     
 	int ptrace_result = ptrace(PTRACE_GETREGS, child_pid, 0, &registers);                                                                              
     if (ptrace_result == -1) {                                                                              
-        fprintf(stderr, "dragonfly> Error (%d) during get_regs", errno);                                                                              
+        fprintf(stderr, "Error (%d) during get_regs", errno);
         perror("ptrace");                                                                              
         exit(errno);                                                                              
     }
@@ -148,7 +148,7 @@ long long unsigned get_value(pid_t child_pid, long long unsigned address) {
 }
 
 void set_breakpoint(long long unsigned bp_address, long long unsigned original_value, pid_t child_pid) {
-	printf("Setting breakpoint\n");
+	//printf("Setting breakpoint\n");
     long long unsigned breakpoint = (original_value & 0xFFFFFFFFFFFFFF00 | 0xCC);
     _ptrace(PTRACE_POKETEXT, child_pid, (void*)bp_address, (void*)breakpoint);
 

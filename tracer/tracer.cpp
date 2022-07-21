@@ -77,6 +77,7 @@ std::vector<bp::breakpoint> set_breakpoints(pid_t child_pid, std::vector<symbol>
                 .symbol = current_symbol.symbol
         };
 
+        std::cout << "[*] bp @ " << current_address << "( " << current_symbol.symbol << " ) " << std::endl;
         set_breakpoint(current_address, saved_value, child_pid);
         breakpoints.push_back(new_bp);
     }
@@ -95,7 +96,7 @@ void cleanup(pid_t pid, std::vector<bp::breakpoint> breakpoints) {
     }
 
     for(auto &breakpoint: breakpoints) {
-        std::cout << "[*] Removing breakpoint @ " << std::hex << breakpoint.address << std::endl;
+        //std::cout << "[*] Removing breakpoint @ " << std::hex << breakpoint.address << std::endl;
         revert_breakpoint(breakpoint.address, breakpoint.saved_opcodes, pid);
     }
 }
@@ -114,7 +115,7 @@ void enable_breakpoint(pid_t child_pid, long long unsigned bp_addr, std::vector<
             [&bp_addr](const bp::breakpoint x) { return x.address == bp_addr;});
 
     if(wanted_breakpoint != breakpoints.end()){
-        std::cout << "[*] Enabling breakpoint @ " << std::hex << wanted_breakpoint->address << std::endl;
+        //std::cout << "[*] Enabling breakpoint @ " << std::hex << wanted_breakpoint->address << std::endl;
         set_breakpoint(bp_addr, wanted_breakpoint->saved_opcodes, child_pid);
     } else {
         throw std::runtime_error("Could not enable breakpoint");
@@ -128,7 +129,7 @@ void remove_breakpoint(pid_t child_pid, long long unsigned bp_addr, std::vector<
             [&bp_addr](const bp::breakpoint x) { return x.address == bp_addr;});
 
     if(wanted_breakpoint != breakpoints.end()){
-        std::cout << "[*] Removing breakpoint @ " << std::hex << wanted_breakpoint->address << std::endl;
+        //std::cout << "[*] Removing breakpoint @ " << std::hex << wanted_breakpoint->address << std::endl;
         revert_breakpoint(bp_addr, wanted_breakpoint->saved_opcodes, child_pid);
     } else {
         throw std::runtime_error("Could not restore breakpoint");
@@ -148,12 +149,11 @@ void display_trace(long long unsigned addr, std::vector<bp::breakpoint> breakpoi
               << std::endl;
 }
 
-
 int attach(int pid, std::vector<symbol> symbols) {
 
     // attach to process. 
     _ptrace(PTRACE_ATTACH, pid, nullptr, nullptr);
-    std::fprintf(stderr, " [*] Attached to process %d\n", pid);
+    std::fprintf(stderr, "[*] Attached to process %d\n", pid);
 
     // setup all breakpoints
     std::vector<bp::breakpoint> breakpoints = set_breakpoints(pid, symbols);
@@ -180,42 +180,40 @@ int attach(int pid, std::vector<symbol> symbols) {
                 registers = get_regs(pid, registers);
                 display_trace(registers.rip - 1, breakpoints);
                 // pause
-                getchar();
+                //getchar();
+
+                registers.rip -= 1; // instruction pointer is one-step ahead because of the int 3 instruction
+                long long unsigned ip = registers.rip;
+                // re-set the original instruction and execute it in singlestep
+                remove_breakpoint(pid, ip, breakpoints);
+
+                set_regs(pid, registers);
+
+                // single step
+                _ptrace(PTRACE_SINGLESTEP, pid, 0, 0);
+                wait(&wait_status);
+                assert(WSTOPSIG(wait_status) == bp::BREAKPOINT_SIGNAL);
+
+                // re-set the breakpoints
+                enable_breakpoint(pid, ip, breakpoints);
+
+                // continue
+                resume_execution(pid);
+                g_child_info.is_running = true;
             }
-            else {
+            else if(status == 4 || status == 11) {
                 registers = get_regs(pid, registers);
-                std::fprintf(stderr, "[!] Crash (signal %d)\n", wait_status);
+                std::fprintf(stderr, "[!] Crash (signal %d)\n", status);
                 std::fprintf(stderr, "[!] Original data at 0x%lx: 0x%lx\n", registers.rip, get_value(pid, registers.rip));
                 exit(-1);
+            } else {
+                resume_execution(pid);
             }
         }
         else {
-            throw std::runtime_error("[!] Unknown error");
+            std::cerr << "[!] Unknown event\n";
+            resume_execution(pid);
         }
-
-        registers.rip -= 1; // instruction pointer is one-step ahead because of the int 3 instruction
-        long long unsigned ip = registers.rip;
-        // re-set the original instruction and execute it in singlestep
-        remove_breakpoint(pid, ip, breakpoints);
-
-        set_regs(pid, registers);
-
-        // single step
-        _ptrace(PTRACE_SINGLESTEP, pid, 0, 0);
-        wait(&wait_status);
-        assert(WSTOPSIG(wait_status) == bp::BREAKPOINT_SIGNAL);
-
-        // singlestep again for debugging //TODO remove me
-        _ptrace(PTRACE_SINGLESTEP, pid, 0, 0);
-        wait(&wait_status);
-        assert(WSTOPSIG(wait_status) == bp::BREAKPOINT_SIGNAL);
-
-        // re-set the breakpoints
-        enable_breakpoint(pid, ip, breakpoints);
-
-        // continue
-        resume_execution(pid);
-        g_child_info.is_running = true;
     }
 
     return 0;
