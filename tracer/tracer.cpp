@@ -13,6 +13,7 @@
 #include <vector>
 #include <assert.h>
 #include <algorithm>
+#include <set>
 
 
 #include "ptrace_helpers.h"
@@ -26,18 +27,17 @@
  */
 
 
-
 tracee_info g_child_info;
 static std::string g_input_file = "addresses.txt";
 
 
-void display_trace(long long unsigned addr, std::vector<bp::breakpoint> breakpoints) {
+void display_trace(long long unsigned addr, std::vector<bp::breakpoint> breakpoints, pid_t pid) {
 
     auto wanted_breakpoint = std::find_if(
             breakpoints.begin(), breakpoints.end(),
             [&addr](const bp::breakpoint x) { return x.address == addr;});
 
-    std::cout << "[*] Breakpoint hit @ 0x"
+    std::cout << "[*] [" << std::dec << pid  <<  "] Breakpoint hit @ 0x"
               << std::hex << wanted_breakpoint->address
               << " (" << wanted_breakpoint->symbol
               << " )"
@@ -50,7 +50,55 @@ int attach(int pid, std::vector<symbol> symbols) {
     _ptrace(PTRACE_ATTACH, pid, nullptr, nullptr);
     errno = 0;
     int ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_TRACECLONE);
-    printf("setoptions ret=%d err=%s\n", ret, strerror(errno));
+    std::fprintf(stderr, "setoptions ret=%d err=%s\n", ret, strerror(errno));
+
+    if(ret == -1) {
+        std::cerr << "[!] Can't follow clones, quitting...\n";
+        exit(-1);
+    }
+
+    pid_t *tid = 0;
+    size_t tids = 0;
+    size_t tids_max = 0;
+    int r = 0;
+    std::set<int>::iterator allThreadsIter;
+    g_child_info.childs.insert(pid);
+
+    /* Obtain task IDs. */
+    tids = get_tids(&tid, &tids_max, pid);
+
+    if (!tids) {
+        std::cerr << "Failed to enumerate threads\n";
+        exit(-1);
+    }
+
+    // Attach to all threads
+    for (unsigned int t = 0; t < tids; t++) {
+
+        // already attached to it
+        if(tid[t] == pid)
+            continue;
+
+        do {
+            r = ptrace(PTRACE_ATTACH, tid[t], (void *)0, (void *)0);
+            if(r != -1) {
+                std::cout << "[*] Attached to thread " << std::dec << tid[t] << std::endl;
+                g_child_info.childs.insert(tid[t]);
+            } else {
+                std::cerr << "[!] Could not attach to " << std::dec << tid[t] << std::endl;
+            }
+        } while (r == -1L && (errno == EBUSY || errno == EFAULT || errno == ESRCH));
+    }
+
+    if(tids == 0) {
+        std::cerr << "Failed to get threads\n";
+        exit(-1);
+    }
+
+    // Dump the registers of each task.
+    for (unsigned int t = 0; t < tids; t++)
+        show_registers(stdout, tid[t], "");
+
     std::fprintf(stderr, "[*] Attached to process %d\n", pid);
 
     // setup all breakpoints
@@ -63,56 +111,117 @@ int attach(int pid, std::vector<symbol> symbols) {
     // resume 
     resume_execution(pid);
 
+    g_child_info.is_running = true;
+
+    int status;
+
     struct user_regs_struct registers; // state of target's registers
 
     // handle debug events
     while(1) {
 
-        wait(&wait_status);
-        
-        if (WIFSTOPPED(wait_status) || WIFSIGNALED(wait_status)) {
+        //pid_t child_waited = waitpid(-1, &status, __WALL);
+        int child_waited = wait(&wait_status);
+
+        if(child_waited == -1) {
+
+            std::cerr << "Got wait -1\n";
+            exit(-1);
+        }
+
+        if(g_child_info.childs.find(child_waited) == g_child_info.childs.end())
+        {
+            printf("\nreceived unknown child %d\t", child_waited);
+            g_child_info.childs.insert(child_waited);
+        }
+
+        if(WIFSTOPPED(wait_status) && WSTOPSIG(wait_status) == SIGTRAP)
+        {
+            pid_t new_child;
+            if(((wait_status >> 16) & 0xffff) == PTRACE_EVENT_CLONE)
+            {
+                if(ptrace(PTRACE_GETEVENTMSG, child_waited, 0, &new_child) != -1)
+                {
+                    g_child_info.childs.insert(new_child);
+                    _ptrace(PTRACE_CONT, new_child, 0, 0);
+
+                    printf("\nchild %d created\n", new_child);
+                }
+
+                _ptrace(PTRACE_CONT, child_waited, 0, 0);
+                continue;
+            }
+        }
+
+        if(WIFEXITED(wait_status))
+        {
+            g_child_info.childs.erase(child_waited);
+            printf("\nchild %d exited with status %d\t", child_waited, WEXITSTATUS(wait_status));
+
+            if(g_child_info.childs.size() == 0)
+                break;
+        }
+        else if(WIFSIGNALED(wait_status))
+        {
+            if(WTERMSIG(wait_status) == 5) {
+                std::cerr <<  "[" << std::dec << child_waited << "]" <<  " maybe killed by signal 5, but trying anyway\n";
+            } else {
+                g_child_info.childs.erase(child_waited);
+                printf("\nchild %d killed by signal %d\t", child_waited, WTERMSIG(wait_status));
+
+                if (g_child_info.childs.size() == 0)
+                    break;
+            }
+        }
+        if (WIFSTOPPED(wait_status)) { // || WIFSIGNALED(wait_status)
 
             int status = 0;
-
-            if(WIFSIGNALED(wait_status))
-                status = WTERMSIG(wait_status);
-            else
-                status = WSTOPSIG(wait_status);
+            status = WSTOPSIG(wait_status);
 
             if (status == bp::BREAKPOINT_SIGNAL) {
                 g_child_info.is_running = false;
-                registers = get_regs(pid, registers);
-                display_trace(registers.rip - 1, breakpoints);
+                registers = get_regs(child_waited, registers);
+                display_trace(registers.eip - 1, breakpoints, child_waited);
                 // pause
                 //getchar();
 
-                registers.rip -= 1; // instruction pointer is one-step ahead because of the int 3 instruction
-                long long unsigned ip = registers.rip;
+                registers.eip -= 1; // instruction pointer is one-step ahead because of the int 3 instruction
+                long long unsigned ip = registers.eip;
                 // re-set the original instruction and execute it in singlestep
-                remove_breakpoint(pid, ip, breakpoints);
+                remove_breakpoint(child_waited, ip, breakpoints);
 
-                set_regs(pid, registers);
+                set_regs(child_waited, registers);
 
                 // single step
-                _ptrace(PTRACE_SINGLESTEP, pid, 0, 0);
+                _ptrace(PTRACE_SINGLESTEP, child_waited, 0, 0);
                 wait(&wait_status);
                 assert(WSTOPSIG(wait_status) == bp::BREAKPOINT_SIGNAL);
 
                 // re-set the breakpoints
-                enable_breakpoint(pid, ip, breakpoints);
+                enable_breakpoint(child_waited, ip, breakpoints);
 
                 // continue
-                resume_execution(pid);
+                resume_execution(child_waited);
                 g_child_info.is_running = true;
             }
             else if(status == 4 || status == 11) {
-                registers = get_regs(pid, registers);
+                registers = get_regs(child_waited, registers);
                 std::fprintf(stderr, "[!] Crash (signal %d)\n", status);
-                std::fprintf(stderr, "[!] Original data at 0x%lx: 0x%lx\n", registers.rip, get_value(pid, registers.rip));
+                std::fprintf(stderr, "[!] Original data at 0x%lx: 0x%lx\n", registers.eip, get_value(child_waited, registers.eip));
                 exit(-1);
-            } else if(status != 17){
-                std::cout << "[!] Got signal " << std::dec << status << " but won't anything\n";
-                resume_execution(pid);
+            } else if(status != 17 && status != 19){
+                std::cout << "[!] Pid "  << std::dec << child_waited << " got signal " << status << " but won't do anything\n";
+                if(resume_execution(child_waited) == -1) {
+                    g_child_info.childs.erase(child_waited);
+                }            }
+            /*else if(status == 19) {
+                std::cout << "[!] Ignoring signal 19 for pid " << child_waited << std::endl;
+            }*/
+            else {
+                if(resume_execution(child_waited) == -1) {
+                    g_child_info.childs.erase(child_waited);
+
+                }
             }
         }
         else {
@@ -122,7 +231,7 @@ int attach(int pid, std::vector<symbol> symbols) {
 
             if(WIFSIGNALED(wait_status)) {
                 std::cerr << "[!] Signal was " << WTERMSIG(wait_status) << std::endl;
-                resume_execution(pid);
+                resume_execution(child_waited);
             }
         }
     }
@@ -131,8 +240,15 @@ int attach(int pid, std::vector<symbol> symbols) {
 }
 
 void sig_handler(int s) {
-    printf("Detaching...\n");
+    std::cout << "\n[*] Detaching...\n";
     cleanup(g_child_info.pid, g_child_info.breakpoints);
+
+    for(auto it = g_child_info.childs.begin() ; it != g_child_info.childs.end() ; it++) {
+        std::cout << "[*] Detaching from " << std::dec << *it << std::endl;
+        _ptrace(PTRACE_DETACH, *it, NULL, NULL);
+    }
+
+    std::cout << "[*] Detaching from " << std::dec << g_child_info.pid << std::endl;
     ptrace(PTRACE_DETACH, g_child_info.pid, NULL, NULL);
     exit(0);
 }

@@ -43,5 +43,5 @@ void set_breakpoint(long long unsigned bp_address, long long unsigned original_v
 
 void revert_breakpoint(long long unsigned bp_address, long long unsigned original_value, pid_t child_pid);
 
-void resume_execution(pid_t child_pid);
+int resume_execution(pid_t child_pid);
 

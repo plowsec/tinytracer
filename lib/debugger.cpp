@@ -1,6 +1,7 @@
 #include "debugger.h"
 #include "ptrace_helpers.h"
 #include <iostream>
+#include <csignal>
 
 std::vector<bp::breakpoint> set_breakpoints(pid_t child_pid, std::vector<symbol> symbols) {
 
@@ -37,15 +38,24 @@ std::vector<bp::breakpoint> set_breakpoints(pid_t child_pid, std::vector<symbol>
 
 void cleanup(pid_t pid, std::vector<bp::breakpoint> breakpoints) {
 
-    if(!g_child_info.is_running) {
-        struct user_regs_struct registers;
-        registers = get_regs(pid, registers);
-        registers.rip -= 1;
-        set_regs(pid, registers);
+    if(g_child_info.is_running) {
+        kill(pid, SIGSTOP);
+    } else {
+        struct user_regs_struct regs;
+        long r;
+
+        r = ptrace(PTRACE_GETREGS, pid, &regs, &regs);
+
+        if (r == -1L) {
+            std::cerr << "Can't cleanup pid " << pid << std::endl;
+        } else {
+            regs.eip -= 1;
+            _ptrace(PTRACE_SETREGS, pid, &regs, &regs);
+        }
     }
 
     for(auto &breakpoint: breakpoints) {
-        //std::cout << "[*] Removing breakpoint @ " << std::hex << breakpoint.address << std::endl;
+        std::cout << "[*] Removing breakpoint @ " << std::hex << breakpoint.address << std::endl;
         revert_breakpoint(breakpoint.address, breakpoint.saved_opcodes, pid);
     }
 }
@@ -83,4 +93,28 @@ void remove_breakpoint(pid_t child_pid, long long unsigned bp_addr, std::vector<
     } else {
         throw std::runtime_error("Could not restore breakpoint");
     }
+}
+
+void show_registers(FILE *const out, pid_t tid, const char *const note)
+{
+    struct user_regs_struct regs;
+    long                    r;
+
+    do {
+        r = ptrace(PTRACE_GETREGS, tid, &regs, &regs);
+    } while (r == -1L && errno == ESRCH);
+    if (r == -1L)
+        return;
+
+#if (defined(__x86_64__) || defined(__i386__)) && __WORDSIZE == 64
+    if (note && *note)
+        fprintf(out, "Task %d: RIP=0x%016lx, RSP=0x%016lx. %s\n", (int)tid, regs.rip, regs.rsp, note);
+    else
+        fprintf(out, "Task %d: RIP=0x%016lx, RSP=0x%016lx.\n", (int)tid, regs.rip, regs.rsp);
+#elif (defined(__x86_64__) || defined(__i386__)) && __WORDSIZE == 32
+    if (note && *note)
+        fprintf(out, "Task %d: EIP=0x%08lx, ESP=0x%08lx. %s\n", (int)tid, regs.eip, regs.esp, note);
+    else
+        fprintf(out, "Task %d: EIP=0x%08lx, ESP=0x%08lx.\n", (int)tid, regs.eip, regs.esp);
+#endif
 }

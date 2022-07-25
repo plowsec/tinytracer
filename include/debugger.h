@@ -13,6 +13,7 @@
 #include <vector>
 #include <assert.h>
 #include <algorithm>
+#include <set>
 
 namespace bp {
 
@@ -31,6 +32,7 @@ typedef struct tracee_info_t {
     bool is_running; // used to detach correctly
     long long unsigned base_address;
     std::vector<bp::breakpoint> breakpoints;
+    std::set<pid_t> childs;
 } tracee_info;
 
 
@@ -52,7 +54,7 @@ void cleanup(pid_t pid, std::vector<bp::breakpoint> breakpoints);
  */
 void enable_breakpoint(pid_t child_pid, long long unsigned bp_addr, std::vector<bp::breakpoint> breakpoints);
 void remove_breakpoint(pid_t child_pid, long long unsigned bp_addr, std::vector<bp::breakpoint> breakpoints);
-
+void show_registers(FILE *const out, pid_t tid, const char *const note);
 
 
 
